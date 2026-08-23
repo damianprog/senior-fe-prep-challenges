@@ -1729,14 +1729,35 @@ to lepiej napisać zwykłą metodę na prototypie
 
 więc do kolejki microtaskQueue jest przekazywany wrapper
 
+Back to claude:
+
+Twoja intuicja („któraś z funkcji z rekordu handler") to jest właśnie ta pomyłka, którą omawialiśmy przy wrapperze. Do kolejki nie trafia callback usera.
+
+Dwa powody, oba twarde:
+
+queueMicrotask(cb) woła cb() bez żadnych argumentów. Nie ma jak przekazać this.value. Wartość musi więc przyjechać domknięciem.
+Callback usera to tylko jeden z trzech obowiązków. Trzeba jeszcze wybrać właściwy z pary, złapać wyjątek i rozstrzygnąć następny promise. Tego nie zrobi funkcja napisana przez usera, bo ona o istnieniu resolveNext nie ma pojęcia.
 
 
+Śledzenie przebiegu kodu:
+const p0 = new MyPromise((resolve) => resolve(1))
+const p1 = p0.then((v) => v + 1)
+const p2 = p1.then((v) => console.log(v))
+console.log('--- koniec kodu synchronicznego ---')
 
+1. konstruktor zwróci promise w której zainicjalizowane są pola 
+private handlers: Handler[] = [];
+private status: PromiseStatus = PENDING;
+private value: any = undefined;
+private isResolved: boolean = false;
 
-
-
-
-
+ale zanim zwróci promise wywołuje executor function przekazaną przez usera
+także konstruktor woła executor(this.resolve, this.reject) 
+wewnątrz executora user woła resolve(1) 
+zatem wykonuje się resolve tej promise
+value przekazana do funkcji resolve to 1
+wewnątrz resolve wołamy this.settle 
+przekazując do niej status fulfilled i value 1
 
 
 
