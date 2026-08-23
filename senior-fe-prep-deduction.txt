@@ -1745,7 +1745,9 @@ const p1 = p0.then((v) => v + 1)
 const p2 = p1.then((v) => console.log(v))
 console.log('--- koniec kodu synchronicznego ---')
 
-1. konstruktor zwróci promise w której zainicjalizowane są pola 
+1. const p0 = new MyPromise((resolve) => resolve(1))
+
+konstruktor zwróci promise w której zainicjalizowane są pola 
 private handlers: Handler[] = [];
 private status: PromiseStatus = PENDING;
 private value: any = undefined;
@@ -1757,7 +1759,131 @@ wewnątrz executora user woła resolve(1)
 zatem wykonuje się resolve tej promise
 value przekazana do funkcji resolve to 1
 wewnątrz resolve wołamy this.settle 
-przekazując do niej status fulfilled i value 1
+przekazując do niej status fulfilled oraz value 1
+
+w settle ustawiamy otrzymany status
+ustawiamy value tej promise
+i isResolved na true
+następnie odpalamy flushHandlers() ale pętla w handlers nie wykonuje się ani razu bo ta promise ma pustą tablice handlers
+
+Zatem zwracamy promise w stanie fulfilled z value 1
+zapisujemy tę promise w zmiennej p0
+
+2. const p1 = p0.then((v) => v + 1)
+
+Na promise p0 wołamy .then(onFulfilled(v))
+czyli jeśli p0 będzie fulfilled i będzie miało ustawione value 
+to zawołamy onFulfilled(v), user nie przekazał do .then drugiego argumentu którym jest onRejected więc jest on undefined
+
+.then musi zwrócić kolejną promise zatem tworzymy nową promise
+i executor tej promise zajmuje się włożeniem do p0 obiektu handler
+można się zapytać a jak to jest że konstruktor kolejnej promise zawoła przekazaną do niego funckje executor i ta włoży obiekt handler do p0 handlers a nie do swojej tablicy handlers?
+odpowiedzią na to pytanie jest fakt że w .then wołanym na p0 
+this odnosi się do p0:
+
+const next = new MyPromise<R>((resolveNext, rejectNext) => {
+      this.handlers.push({ onFulfilled, onRejected, resolveNext, rejectNext });
+});
+
+resolveNext i rejectNext to funkcje sterujące p1
+zostają one przekazane do executor function kiedy woła ją konstruktor p1
+
+handler to pomost pomiędzy p0 i p1
+chodzi o to aby kiedy p0 będzie fulfilled, zawołać resolve p1 z przekazaną do niego value z p0
+
+następnie odpalamy flushHandlers na p0
+
+status p0 jest fulfilled więc nie wychodzimy early returnem
+
+i teraz jest rzecz którą nie do końca rozumiem
+po co robimy: 
+const pending = this.handlers;
+this.handlers = [];
+
+a swoją drogą to primitives są zapisywane przez value
+a array nie jest primitive więc jest zapisywana do pending referencja do this.handlers a skoro this.handlers ustawiamy na [] to pending.forEach uruchomiło by się na pustej tablicy? 
+Także pytanie to czy na pewno kopiujemy tą tablice w odpowiedni sposób?
+
+Back to claude:
+
+Napisałeś: „skoro this.handlers ustawiamy na [], to pending.forEach uruchomiłoby się na pustej tablicy?"
+
+Nie — bo mylisz dwie różne operacje:
+
+this.handlers = []	zmienia na co wskazuje pole handlers
+
+this.handlers.length = 0  zmienia zawartość tablicy, na którą pole wskazuje
+
+const pending = this.handlers;  // pending ──┐
+                                //           ├──> [h1, h2]   (tablica A)
+                                // this.handlers ─┘
+
+this.handlers = [];             // pending ─────> [h1, h2]   (tablica A)
+                                // this.handlers ─> []       (tablica B, nowa)
+
+Back to moja dedukcja:
+
+const pending = this.handlers;
+
+Teraz pending oraz this.handlers wskazują na tę samą tablice
+
+this.handlers = []; 
+
+Teraz this.handlers wskazuje na nową tablicę
+a pending wskazuje na poprzednią tablicę na którą wskazywał this.handlers
+
+wiec co się dzieje?
+Faktycznie do pending jest przypisywana ta sama referencja która jest przypisana do this.handlers po prostu w następnej lini do this.handlers przypisujemy inną referencje co nie zmienia tego co jest przypisane do pending.
+
+i wracając do pytania:
+i teraz jest rzecz którą nie do końca rozumiem
+po co robimy: 
+const pending = this.handlers;
+this.handlers = [];
+
+czyli po co przed pętlą wkładającą wrappery do kolejki microtasków
+this.handlers w p0 ustawiamy na [], przed pętlą czyścimy tablice handlers na p0
+
+Back to claude:
+
+3. Po co to w ogóle robimy
+
+Dwa powody, oba o reentrancji — o tym, że handler wykonywany w pętli może dołożyć nowy handler do this.handlers:
+
+a) Żeby nie zjeść nowego handlera. Gdybyś iterował po this.handlers i wyczyścił ją po pętli, wyrzuciłbyś handler dodany w trakcie — nigdy by się nie wykonał.
+
+b) Żeby nie odpalić starego handlera dwa razy. Gdybyś nie czyścił wcale, kolejne wywołanie flushHandlers (a jest wołany i z settle, i z then) przeleciałoby po tych samych handlerach ponownie. To złamanie kontraktu Promise: handler odpala się dokładnie raz.
+
+Back to moja dedukcja:
+punkt a) jest ciekawszy, punkt b) jest oczywisty
+
+Back to claude:
+
+Wzorzec nazywa się „drain": zabierz całą kolejkę i natychmiast zostaw na jej miejscu puste wiadro. Wszystko, co dojdzie w trakcie przetwarzania, ląduje w nowym wiadrze i poczeka na swoją turę.
+
+Back to moja dedukcja:
+
+Wracając do momentu w którym przerwałem analizowanie kodu
+czyli na wykonywaniu flushHandlers na p0
+
+przed pętlą iterującą po handlers na p0 
+robimy kopie referencji do tablicy na którą wskazywało this.handlers
+zapisujemy te referencje do pending
+a do this.handlers przypisujemy referencje do nowej pustej tablicy
+
+this.handlers musi być czyszczone 
+żeby nie wykonywać drugi raz tego samego handlera
+
+sęk w tym że w trakcie wykonywania pętli wkładającej wrappery do kolejki microtasków, do handlers w p0 może trafić kolejny handler.
+Gdybyśmy pętle odpalili na this.handlers to handler dodany w trakcie jej wykonywania, po pętli zostałby zjedzony przez resetowanie this.handlers dopiero po pętli.
+
+question:
+a jak to właściwie jest z .forEach? bo przecież mogło by być tak że w trakcie iterowania się po .forEach, dorzucili byśmy do tablicy po której się iterujemy nowy element to ta iteracja nie doszła by to tego dorzuconego elementu?
+
+
+
+
+
 
 
 
