@@ -1964,6 +1964,92 @@ Zatem ten wrapper jest zakolejkowany do kolejki mikrotasków
 
 flushHandlers na p0 zostało wykonane i z .then zostaje zwrócona promise p1
 
+3. const p2 = p1.then((v) => console.log(v))
+
+na promise p1 wykonujemy .then
+
+a w p1.then tworzymy kolejny promise 
+i do konstruktora tego nowego promise 
+przekazujemy executor function w którym do p1 handlers przekazujemy 
+obiekt handler z przekazanym do .then onFulfilled która ma się wykonać 
+kiedy p1 będzie fulfilled i będzie miała value. Oraz funkcje sterujące nowej promise p2, które zostaną odpalone kiedy p1 będzie resolved 
+czyli fulfilled lub rejected
+
+kiedy konstruktor p2 odpali executor function, do handlers p1 trafi wyżej opisany handler. Ale nie zostaną uruchomione jeszcze resolve / reject p2.
+Bo te są dopiero zapisane w handlerze i czekają na wywołanie.
+
+następnie odpalamy flushHandlers na p1.
+
+i z racji że p1 jest jeszcze pending, wychodzimy z flushHandlers early returnem
+p1 będzie resolved dopiero po wykonaniu mikrotaska którego zakolejkowaliśmy podczas iteracji po p0 handlers.
+
+handler zostaje w gnieździe p1 i czeka.
+
+zatem .flushHandlers na p1 zostaje wykonane i .then zwraca promise p2.
+
+4. console.log('--- koniec kodu synchronicznego ---')
+
+wykonujemy ostatnią linijkę kodu synchronicznegom w konsoli mamy wypisane 
+"--- koniec kodu synchronicznego ---" 
+
+W tym momecnie pętla zdarzeń odzyskuje kontrole bo macrotask "uruchom ten skrypt" został wykonany.
+
+while (true) {
+  const task = macrotaskQueue.shift()   // weź JEDEN task (czekaj, jeśli pusto)
+  if (task) task()                      // ← tu wykonuje się Twój kod, stos rośnie i się zwija
+
+  while (microtaskQueue.length > 0) {   // CHECKPOINT: drenuj do pustej
+    microtaskQueue.shift()()
+  }
+
+  if (czasNaKlatkę) render()            // w przeglądarce
+}
+
+zatem event loop dochodzi do pętli while wykonującej po kolei wszystkie microtaski z kolejki microtasków
+
+bierze pierwszy microtask i go wywołuje
+
+pierwszym microtaskiem jest microtask który był kolejkowany przy wykonywaniu .flushHandlers na p0. Tym microtaskiem jest wrapper function
+w której najpierw sprawdzamy czy status p0 jest fulfilled
+p0 jest fulfilled zatem wykonujemy callback onFulfilled który był przekazany do p0.then w tym miejscu w tej linijce snippetu 
+const p1 = p0.then((v) => v + 1)
+
+callback zostaje wywołany z przekazaną do niego value p0
+value p0 to było 1 więc (v) => v + 1 z tego callbacku zwracamy wartość 2
+2 przekazujemy do funkcji resolve p1
+funkcja resolve w p1 uruchamia settle na p1 przekazując status fulfilled i wartość 2
+w settle ustawiamy na p1 otrzymany status, value i zmieniamy flage isResolved na true.
+następnie w settle wywołujemy flushHandlers()
+
+także uruchamiamy flushHandlers() na p1 
+a tam siedzi jeden handler w tablicy handlers
+handler posiadający funkcje onFulfilled która ma się uruchomić z wartością z p1 i wydrukować ją w konsoli oraz funkcje sterujące p2 z których w przypadku tego snippetu skorzystamy z resolve do której przekażemy zwrot z onFulfilled który będzie undefined.
+
+Zatem wywołujemy resolve na p2. p2 przechodzi w stan fulfilled z value undefined.
+
+Done
+
+skonczone na: zweryfikować dedukcje z claude.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
