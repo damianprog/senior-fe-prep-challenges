@@ -87,8 +87,8 @@ export class MyPromise<T> {
     );
   }
 
-  then<R>(
-    onFulfilled?: OnFulfilled<any, any>,
+  then<R = T>(
+    onFulfilled?: OnFulfilled<T, R>,
     onRejected?: OnRejected<R>,
   ): MyPromise<R> {
     const next = new MyPromise<R>((resolveNext, rejectNext) => {

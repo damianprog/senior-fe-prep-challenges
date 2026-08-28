@@ -2031,6 +2031,86 @@ Done
 
 skonczone na: zweryfikować dedukcje z claude. 
 
+then(onFulfilled: OnFulfilled<T, R>, onRejected: OnRejcted<R>)
+Nie mamy R type, jak możemy go dostać?
+Z tej racji że R type jest definiowany przez usera promise
+musimy się dopytać TS o infer tego typu
+
+dlatego dostarczamy generic value R
+
+then<R>(onFulfilled: OnFulfilled<T, R>, onRejected: OnRejcted<R>)
+
+domyślnie możemy założyć że return type będzie taki sam jak T
+
+więc 
+
+then<R = T>(onFulfilled: OnFulfilled<T, R>, onRejected: OnRejcted<R>)
+
+question:
+T to jest typ wartości zwracanej z callbacka przekazanego do promise?
+
+ale jeśli user dostarczy własny type to będzie on automatycznie infered
+
+
+type THandler = {
+  onFulfilled: (val: any) => any;
+  onRejected?: (reason: any) => any;
+};
+
+question:
+
+piszemy tutaj any values aby uniknąć handling the types with the internal logic
+jeśli byśmy podali określony typ to trzeba by było zrobić dużo castingów
+
+question:
+
+jeśli wartością którą robimy settle promise jest inna promise 
+to musimy poczekać na promise i dopiero potem zupdatować status i value
+
+Kiedy próbujemy resolve promise inną promise 
+JS działa w ten sposób że awaits przekazaną promise i dopiero updatuje value of the promise
+
+question:
+logika settling promise with another promise wewnątrz #settle
+
+then<R = T>(onFulfilled: OnFulfilled<T, R>, onRejected?: OnRejected<R>) {
+    
+  }
+
+
+type Box<T> = { value: T };
+type A = Box<number>;   // "wywołanie", argument: number
+
+to jest jasne ale jak rozumieć 
+new MyPromise((resolve: any) => resolve(42));
+gdzie export class MyPromise<T> {
+
+tu nie ma jawnie dostarczonego T jak w przypadku Box<T>
+
+new MyPromise<number>(...)   // MyPromise<number>   → T = number
+
+ale u mnie nie ma dostarczonego typu
+
+if (value instanceof MyPromise) {
+      value.then(update);
+    } 
+
+question:
+mogę to rozumieć tak że update zostanie wywołane z argumentem value promise na którym jest wywołany .then
+
+then<R = T>(onFulfilled: OnFulfilled<T, R>, onRejected?: OnRejected<R>) {}
+
+a jak rozumieć generyki w tej funkcji? to co jest przy then czyli <R = T>. Mogę to rozumieć tak że T jest wnioskowane na podstawie typu wartości dostarczonej jako argument do funkcji która to funkcja jest argumentem then? A OnRejected<R> R jest wnioskowane na podstawie typu wartości zwracanej przez funkcje dostarczonej jako argument do then w miejscu onRejected? I jeśli R nie da się wywnioskować bo nie zostało dostarczone tam gdzie miało być to domyślnym typem R będzie to samo co jest w T.?
+
+then<R = T>(onFulfilled: OnFulfilled<T, R>, onRejected?: OnRejected<R>) {}
+
+dobra to w takim razie T w then<R = T> i idąc dalej w OnFulfilled<T, R> jest takie samo jak T MyPromise<T> tak? A R jest wnioskowane na podstawie typu wartości zwracanej?
+
+
+
+
+
+
 
 
 
