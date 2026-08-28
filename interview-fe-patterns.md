@@ -1822,48 +1822,88 @@ while (microtaskQueue.length > 0) {
 
 To **celowo** drugi typ. Dlatego mikrotask dodany w trakcie drenażu wykonuje się w **tym samym checkpoincie**, a nie po następnym macrotasku — i dlatego mikrotask kolejkujący w nieskończoność kolejny mikrotask **zawiesza stronę na amen**. Z macrotaskami tak nie jest.
 
-### 6.3 Dlaczego `queueMicrotask` jest konieczny
+### 6.7 Dlaczego `queueMicrotask` jest niezbędne — pełne uzasadnienie
 
-**Jednym zdaniem:** żeby `.then` zachowywał się tak samo niezależnie od tego, czy promise był już rozstrzygnięty, czy dopiero będzie.
+**Wymóg (Promises/A+ 2.2.4):** `onFulfilled`/`onRejected` nie mogą zostać wywołane, dopóki stos wykonania zawiera cokolwiek poza kodem platformowym. Niezbędne jest więc **odroczenie**, nie konkretna funkcja — `queueMicrotask` to najprostszy sposób, żeby je spełnić.
+
+**Zasada nadrzędna, z której wynika cała reszta:** `.then` ma mieć **jedno** zachowanie, nie dwa. Rejestruje i wraca — także wtedy, gdy wartość jest już od dawna dostępna.
+
+**Cztery szkody z wywołania synchronicznego:**
+
+**(1) Zalgo — kolejność zależna od stanu, nie od kodu.**
 
 ```js
-function getData(useCache) {
-  return useCache
-    ? MyPromise.resolve(cached) // rozstrzygnięty NATYCHMIAST
-    : fetchFromNetwork(); // rozstrzygnięty za 200 ms
+function get(cache) {
+  return cache
+    ? cache.then((v) => v * 2) // settled
+    : fetchFromNetwork().then((v) => v * 2); // pending
 }
-
-let logger = null;
-getData(useCache).then((d) => logger.log(d));
-logger = createLogger();
+console.log("1");
+get(cache).then((v) => console.log("3:", v));
+console.log("2");
 ```
 
-Bez `queueMicrotask`:
+Z odroczeniem zawsze `1 2 3`. Bez — `1 3 2` przy trafieniu w cache, `1 2 3` przy pudle. **Kolejność wykonania programu zaczyna zależeć od tego, czy dane były w cache'u.** Termin: „releasing Zalgo" (Isaac Schlueter, 2013).
 
-- `useCache = true` → handler odpala synchronicznie, zanim `logger` zostanie przypisany → `TypeError: Cannot read properties of null`
-- `useCache = false` → handler odpala za 200 ms → działa
+**(2) `resolve()` przestaje być zwykłym wywołaniem — reentrancy.**
 
-Ten sam kod, ten sam typ zwracany, dwa zachowania zależne od cache'a. Nazwa: **„releasing Zalgo"** — funkcja czasem synchroniczna, czasem nie, zmusza każdego wołającego do zgadywania stanu świata po powrocie z jej wywołania.
+```js
+close() {
+  this.socket = null         // (1) zaczynam sprzątać
+  this.pendingResolve(true)  // (2) — przy sync flushu: wywołanie CAŁEGO cudzego łańcucha
+  this.state = 'closed'      // (3) kończę sprzątanie
+}
+```
 
-**Trzy konkretne konsekwencje:**
+Handlery zobaczą obiekt w stanie połowicznie posprzątanym (`socket` już `null`, `state` wciąż `'open'`) i mogą wejść w `close()` ponownie. Reguła: **nie oddawaj sterowania nieznanemu kodowi w środku własnej operacji.**
 
-**a) Zmienna, do której przypisujesz promise, może jeszcze nie istnieć.**
+**(3) TDZ — twardy `ReferenceError`, nie kwestia stylu.**
 
 ```js
 const p1 = p0.then((v) => {
-  /* odwołanie do p1 → ReferenceError, TDZ */
+  console.log(p1);
+  return v + 1;
 });
 ```
 
-`resolve(1)` w konstruktorze `p0` wykonuje się, zanim `const p1 = ...` cokolwiek przypisze.
+Wiązanie `p1` inicjalizuje się dopiero gdy `.then` **zwróci**. Sync handler odpala wcześniej → `Cannot access 'p1' before initialization`. Znów tylko na settled promisie — błąd zależny od wyścigu.
 
-**b) `resolve()` nie może porywać kontroli.** Synchroniczne wywołanie oznacza, że niewinne `resolve(x)` odpala dowolnie długi łańcuch cudzego kodu przed powrotem do następnej linijki. Stos rośnie proporcjonalnie do długości łańcucha `.then`.
+**(4) Stos rośnie zamiast się zwijać.**
 
-**c) Spec tego wymaga.** Promises/A+ 2.2.4: _„onFulfilled or onRejected must not be called until the execution context stack contains only platform code."_
+```js
+function loop(p, n) {
+  return n === 0
+    ? p
+    : loop(
+        p.then((v) => v + 1),
+        n - 1,
+      );
+}
+loop(MyPromise.resolve(0), 100000);
+```
 
-**Dlaczego mikrotask, a nie `setTimeout(fn, 0)`:** mikrotask wykonuje się w tym samym checkpoincie — przed renderem, przed I/O, przed timerami. `setTimeout` dałby poprawność kontraktu, ale zmieniłby promise'y z narzędzia „po bieżącym kodzie" na „kiedyś tam", i przeplot z natywnym `Promise` byłby zawsze przegrany.
+Sync → 100 000 zagnieżdżonych ramek → `Maximum call stack size exceeded`. Odroczenie daje każdemu handlerowi **czysty, płytki stos**; głębokość jest stała niezależnie od długości łańcucha. To powód, dla którego `await` w długiej pętli w ogóle działa.
 
-> `queueMicrotask` daje **gwarancję asynchroniczności bez kosztu opóźnienia**: handler nigdy nie odpali synchronicznie, ale odpali najwcześniej, jak to możliwe po opróżnieniu stosu.
+**Dlaczego mikrotask, a nie `setTimeout(fn, 0)`:**
+
+|            | mikrotask                                          | `setTimeout(fn, 0)`                    |
+| ---------- | -------------------------------------------------- | -------------------------------------- |
+| Kiedy      | po bieżącym zadaniu, **przed** oddaniem sterowania | jako kolejne zadanie                   |
+| Drenaż     | kolejka do końca, łącznie z dopisanymi w trakcie   | jedno zadanie na obrót                 |
+| Render     | łańcuch domyka się **przed** malowaniem klatki     | render i I/O wchodzą między ogniwa     |
+| Opóźnienie | brak                                               | clamp ~4 ms po 5 zagnieżdżeniach       |
+| Interop    | ta sama kolejka co natywne promise'y i `await`     | inna kolejka → kolejność się rozjeżdża |
+
+Ostatni wiersz rozstrzyga: przy `setTimeout` snippet
+
+```js
+Promise.resolve().then(() => console.log("natywny"));
+MyPromise.resolve().then(() => console.log("mój"));
+```
+
+zawsze dałby `natywny mój` — implementacja przestałaby być **wymienna** z natywną, czyli straciłaby sens.
+
+**Formuła na rozmowę:** „`queueMicrotask` gwarantuje, że `.then` ma jedno zachowanie niezależnie od stanu promise'a: rejestruje i wraca. Bez tego kolejność wykonania zależałaby od tego, czy wartość była gotowa, `resolve()` wywoływałoby cudzy kod w środku moich niezmienników, a długie łańcuchy przepełniałyby stos. Mikrotask, a nie `setTimeout`, bo tylko ta kolejka daje interop z natywnymi promise'ami i `await`."
 
 ### 6.4 Liczydło obrotów
 
