@@ -2029,7 +2029,7 @@ Zatem wywołujemy resolve na p2. p2 przechodzi w stan fulfilled z value undefine
 
 Done
 
-skonczone na: zweryfikować dedukcje z claude. //
+skonczone na: zweryfikować dedukcje z claude. 
 
 
 

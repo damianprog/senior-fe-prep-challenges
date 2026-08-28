@@ -1758,3 +1758,148 @@ Na rozmowie warto powiedzieć wprost, kiedy przestać abstrahować: tabela looku
 - [ ] Test pamięci 16.08: detekcja cyklu w `deepFreeze` od zera, sprawdzona na czterech kształtach
 - [ ] Rozstrzygnąć rozbieżność symbol: kod vs JSDoc
 - [ ] Dopisać do JSDoc ograniczenie o kluczach Map
+
+## 6. Drain, pętle iteracyjne i mikrotaski (28.08.2026)
+
+Kontekst: trace `MyPromise` na snippecie z łańcuchem dwóch `.then`. Wszystko poniżej to decyzje projektowe do obrony na rozmowie, nie mechanika.
+
+### 6.1 Drain w `flushHandlers` — dlaczego tak, a nie prościej
+
+```ts
+const pending = this.handlers;
+this.handlers = [];
+pending.forEach(/* ... */);
+```
+
+**Semantyka:** `this.handlers = []` przestawia **strzałkę** (pole wskazuje na nową tablicę). `pending` nadal trzyma referencję do starej. Żeby zmienić **obiekt**, trzeba go dotknąć: `push`, `splice`, `length = 0`, `obj.x = ...`.
+
+> Przypisanie do zmiennej/pola przestawia strzałkę. Mutacja dotyka obiektu.
+
+Ta sama pułapka gryzie w React (`state.items.push(x)` nie wywoła re-rendera — referencja się nie zmieniła) i w `useEffect` deps. Trzy różne opakowania, jeden mechanizm.
+
+**Dwa powody czyszczenia:**
+
+| Powód                                                                            | Czy zachodzi przy `flushHandlers`, który _kolejkuje_                                |
+| -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| (b) nie wykonać handlera dwa razy — `then` i `settle` oba wołają `flushHandlers` | **tak**, to realny powód                                                            |
+| (a) nie zjeść handlera dorzuconego w trakcie pętli                               | **nie** — pętla tylko kolejkuje, nie wykonuje kodu użytkownika, nie ma kto dorzucić |
+
+Powód (a) jest prawdziwy dla **innego kształtu** `flushHandlers`: takiego, który woła `onFulfilled` synchronicznie w pętli. Wtedy handler może w środku `forEach` zawołać `.then` na tym samym promise, `forEach` go nie odwiedzi (zamrożony `len`), a czyszczenie po pętli by go skasowało.
+
+**Odpowiedź na „czemu drain, a nie po prostu `this.handlers = []` po pętli":**
+
+> Poprawność draina nie zależy od tego, czy pętla wykonuje kod użytkownika, czy tylko go kolejkuje.
+
+Zmiana `flushHandlers` z kolejkowania na wywołanie synchroniczne — albo dołożenie w środku pętli czegokolwiek, co oddaje kontrolę — nie psuje kodu z drainem. Kod z czyszczeniem po pętli psuje się po cichu.
+
+### 6.2 Dwa rodzaje pętli iteracyjnych
+
+`Array.prototype.forEach`: `len` odczytywany **raz**, przed pierwszym callbackiem. Potem `while k < len` z zamrożoną liczbą.
+
+- element **dodany** w trakcie → poza `len` → **nie odwiedzony**
+- element **usunięty** przed odwiedzeniem → pominięty (sprawdzenie `HasProperty`, nie dostaniesz `undefined`)
+- element **nadpisany** w trakcie → callback dostanie nową wartość (odczyt `arr[k]` dzieje się w momencie odwiedzenia)
+
+Zamrożona jest **długość**, nie zawartość.
+
+| Konstrukcja                                       | Zobaczy dorzucony element                                                          |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `forEach` / `map` / `filter` / `some` / `every`   | **nie** — `len` czytany raz                                                        |
+| `for (let i = 0; i < arr.length; i++)`            | **tak** — `length` re-ewaluowane co obrót → przy ciągłym `push` pętla nieskończona |
+| `for...of`                                        | **tak** — iterator sprawdza `index >= length` co krok → j.w.                       |
+| `for (let i = 0, len = arr.length; i < len; i++)` | **nie** — ręcznie to samo, co `forEach`                                            |
+
+**Dlaczego w `flushHandlers` chcemy typu „zamrożonego":** drain + `forEach` gwarantuje **ograniczoną porcję pracy** — bierzesz N handlerów, obsługujesz N, cokolwiek dojdzie czeka na następny flush. Pętla z re-ewaluowaną długością wciąga nowe do bieżącego przebiegu, więc handler dokładający handler może ją zapętlić bez końca.
+
+**Łuk domykający — ta sama różnica na innym poziomie robi coś przeciwnego.** Pętla drenująca mikrotaski w event loopie:
+
+```js
+while (microtaskQueue.length > 0) {
+  // ← length re-ewaluowane co obrót
+  microtaskQueue.shift()();
+}
+```
+
+To **celowo** drugi typ. Dlatego mikrotask dodany w trakcie drenażu wykonuje się w **tym samym checkpoincie**, a nie po następnym macrotasku — i dlatego mikrotask kolejkujący w nieskończoność kolejny mikrotask **zawiesza stronę na amen**. Z macrotaskami tak nie jest.
+
+### 6.3 Dlaczego `queueMicrotask` jest konieczny
+
+**Jednym zdaniem:** żeby `.then` zachowywał się tak samo niezależnie od tego, czy promise był już rozstrzygnięty, czy dopiero będzie.
+
+```js
+function getData(useCache) {
+  return useCache
+    ? MyPromise.resolve(cached) // rozstrzygnięty NATYCHMIAST
+    : fetchFromNetwork(); // rozstrzygnięty za 200 ms
+}
+
+let logger = null;
+getData(useCache).then((d) => logger.log(d));
+logger = createLogger();
+```
+
+Bez `queueMicrotask`:
+
+- `useCache = true` → handler odpala synchronicznie, zanim `logger` zostanie przypisany → `TypeError: Cannot read properties of null`
+- `useCache = false` → handler odpala za 200 ms → działa
+
+Ten sam kod, ten sam typ zwracany, dwa zachowania zależne od cache'a. Nazwa: **„releasing Zalgo"** — funkcja czasem synchroniczna, czasem nie, zmusza każdego wołającego do zgadywania stanu świata po powrocie z jej wywołania.
+
+**Trzy konkretne konsekwencje:**
+
+**a) Zmienna, do której przypisujesz promise, może jeszcze nie istnieć.**
+
+```js
+const p1 = p0.then((v) => {
+  /* odwołanie do p1 → ReferenceError, TDZ */
+});
+```
+
+`resolve(1)` w konstruktorze `p0` wykonuje się, zanim `const p1 = ...` cokolwiek przypisze.
+
+**b) `resolve()` nie może porywać kontroli.** Synchroniczne wywołanie oznacza, że niewinne `resolve(x)` odpala dowolnie długi łańcuch cudzego kodu przed powrotem do następnej linijki. Stos rośnie proporcjonalnie do długości łańcucha `.then`.
+
+**c) Spec tego wymaga.** Promises/A+ 2.2.4: _„onFulfilled or onRejected must not be called until the execution context stack contains only platform code."_
+
+**Dlaczego mikrotask, a nie `setTimeout(fn, 0)`:** mikrotask wykonuje się w tym samym checkpoincie — przed renderem, przed I/O, przed timerami. `setTimeout` dałby poprawność kontraktu, ale zmieniłby promise'y z narzędzia „po bieżącym kodzie" na „kiedyś tam", i przeplot z natywnym `Promise` byłby zawsze przegrany.
+
+> `queueMicrotask` daje **gwarancję asynchroniczności bez kosztu opóźnienia**: handler nigdy nie odpali synchronicznie, ale odpali najwcześniej, jak to możliwe po opróżnieniu stosu.
+
+### 6.4 Liczydło obrotów
+
+**Łańcuch N ogniw `.then` = N obrotów kolejki mikrotasków**, wszystkie w jednym checkpoincie.
+
+```js
+const p0 = new MyPromise((resolve) => resolve(1));
+const p1 = p0.then((v) => v + 1);
+const p2 = p1.then((v) => console.log(v));
+console.log("--- koniec kodu synchronicznego ---");
+```
+
+```
+--- koniec kodu synchronicznego ---
+2
+```
+
+- **M1** (wrapper `p0 → p1`): `(v) => v + 1` z `v = 1` → `2` → `resolveNext(2)` → `settle` p1 → `flushHandlers` p1 → **kolejkuje M2**. Konsola: nic.
+- **M2** (wrapper `p1 → p2`): `console.log(2)` → **drukuje `2`** → zwraca `undefined` → `resolve` p2 → `flushHandlers` p2 → handlers pusta.
+
+To samo liczydło obsługuje pytanie o `return Promise.resolve()` z handlera (§ pytanie otwarte — obsługa thenable): ogniw jest więcej, niż widać w kodzie.
+
+### 6.5 Gotchas / pytania rekrutacyjne z tej sekcji
+
+1. _„Co się stanie, jak w pętli po tablicy będziesz do niej dopisywał?"_ → **zależy, którą pętlą** (tabela 6.2)
+2. _„Czemu `.then` nie odpala callbacka od razu, skoro promise jest już fulfilled?"_ → Zalgo (6.3)
+3. _„Czemu mikrotask, a nie `setTimeout`?"_ → checkpoint przed renderem/timerami (6.3)
+4. _„Czemu kopiujesz tablicę przed pętlą zamiast wyczyścić po?"_ → odporność na zmianę kształtu pętli (6.1)
+5. _„Ile mikrotasków zużyje łańcuch trzech `.then`?"_ → trzy (6.4)
+
+### 6.6 Własna pułapka do przetestowania
+
+Przy trace'owaniu **przeskoczyłem jeden obrót** w ostatnim ogniwie: na `p1` przyjąłem, że `flushHandlers` wykona handler synchronicznie, choć dwa kroki wcześniej poprawnie zapisałem, że na `p0` go **kolejkuje**.
+
+Reguła do zautomatyzowania:
+
+> `flushHandlers` **zawsze kolejkuje, nigdy nie wykonuje**. Nie ma w nim ścieżki synchronicznej — na każdym ogniwie łańcucha zachowuje się identycznie.
+
+Wiedza jest, odruchu nie ma. To typ błędu, który wypada pod presją rozmowy → materiał na test pamięci, nie na naukę od zera.
