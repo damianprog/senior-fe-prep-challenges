@@ -49,7 +49,7 @@ export class MyPromise<T> {
       this.status = status;
       this.value = value;
       this.isResolved = true;
-      // todo: flush handlers
+      this.flushHandlers();
     }
   }
 
@@ -75,16 +75,25 @@ export class MyPromise<T> {
     const pending = this.handlers;
     this.handlers = [];
 
-    pending.forEach((handler) =>
+    pending.forEach((handler) => {
       queueMicrotask(() => {
         const callback =
           this.status === FULFILLED ? handler.onFulfilled : handler.onRejected;
 
         if (!callback) {
+          // brak callbacku → przepuść wartość dalej, ZACHOWUJĄC tor
           if (this.status === FULFILLED) handler.resolveNext(this.value);
+          else handler.rejectNext(this.value);
+          return;
         }
-      }),
-    );
+
+        try {
+          handler.resolveNext(callback(this.value));
+        } catch (err) {
+          handler.rejectNext(err);
+        }
+      });
+    });
   }
 
   then<R = T>(

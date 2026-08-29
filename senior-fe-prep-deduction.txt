@@ -2106,9 +2106,14 @@ then<R = T>(onFulfilled: OnFulfilled<T, R>, onRejected?: OnRejected<R>) {}
 
 dobra to w takim razie T w then<R = T> i idąc dalej w OnFulfilled<T, R> jest takie samo jak T MyPromise<T> tak? A R jest wnioskowane na podstawie typu wartości zwracanej?
 
+Tak
 
+if (value instanceof MyPromise) {
+            value.then(resolve, reject);
+          } else {
 
-
+o co chodzi z tym value.then(resolve, reject); które jest również w #settle?
+przecież .then zwraca promise a nie widzę żeby tutaj ta zwrócona promise była wykorzystywana, to po co to robić?
 
 
 
