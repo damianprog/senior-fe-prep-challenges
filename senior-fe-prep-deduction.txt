@@ -2115,6 +2115,81 @@ if (value instanceof MyPromise) {
 o co chodzi z tym value.then(resolve, reject); które jest również w #settle?
 przecież .then zwraca promise a nie widzę żeby tutaj ta zwrócona promise była wykorzystywana, to po co to robić?
 
+jeśli value to jest promise to chcemy najpierw ją settle a następnie z jej value uruchomić resolve / reject kolejnej promise czyli tej zwróconej z .then
+
+question:
+czy jak? Nie rozumiem tego do końca.
+
+question:
+new MyPromise((_: any, reject: any) => reject("error"))
+  .catch(() => "recovered")
+  .then((v: any) => console.log(v)); // Expected: "recovered"
+
+
+question:
+catch<R = never>
+dlaczego <R = never> i dlaczego <T | R> w MyPromise<T | R> 
+
+p1 będzie resolved z value "recovered"
+
+
+1.
+console.log('1');
+setTimeout(() => console.log('2'), 0);
+Promise.resolve().then(() => console.log('3'));
+console.log('4');
+
+1,4,3,2
+
+Uzasadnienie dlaczego 3 przed 2:
+po wykonaniu skryptu czyli jednego macrotaska pętla zdarzeń odzyskuje kontrole i przechodzi do drenażu microtasków. Kiedy kolejka microtasków jest pusta, w następnym obrocie pętli wykonujemy kolejny 1 macrotask którym jest callback z setTimeout
+
+2.
+
+Promise.resolve().then(() => console.log('A1')).then(() => console.log('A2')).then(() => console.log('A3'));
+Promise.resolve().then(() => console.log('B1')).then(() => console.log('B2')).then(() => console.log('B3'));
+
+A1 trafia do handlers promise zwróconej ze static resolve
+uruchamiamy na tej promise flushHandlers i kolejkujemy handler (wrapper) do microtaskQueue
+kiedy ten microtask się wykona uruchomimy resolve na promise zwróconej z pierwszego .then z wartością undefined bo callback z console.log wypisuje do konsoli A1 i zwraca undefined.
+, A2 trafia do handlers A1 w then wołamy flushHandlers ALE status A1 jeszcze jest pending a będzie fulfilled po wykonaniu pierwszego microtaska, A3 trafia do handlers A2
+Analogicznie dla B
+
+A1, B1, A2, B2, A3, B3
+
+Najpierw do kolejki trafia A1 następnie B1.
+Kiedy A1 się wykona to do kolejki dorzucane jest A2
+Następnie wykonuje się B1 i do kolejki za A2 dorzucane jest B2 itd.
+
+3.
+
+setTimeout(() => console.log('timeout'), 0);
+
+Promise.resolve().then(() => {
+  console.log('m1');
+  queueMicrotask(() => console.log('m2'));
+});
+
+queueMicrotask(() => console.log('m3'));
+
+Do rejestracji trafia "timeout", potem silnik go dorzuci do kolejki macrotasków
+więc załóżmy że już on siedzi w kolejce macrotasków bo 0ms time
+
+static resolve zwraca promise która od razu jest fulfilled z value undefined.
+na tej promise uruchamiamy .then, przekazując onFulfilled w którym to callbacku wywołamy console.log i zakolejkujemy microtask. Do pierwszej promise handlers dodajemy nowy handler z callbackiem onFulfilled i wołamy na niej flushHandlers, promise ta jest fulfilled więc do microtaskQueue kolejkujemy wrapper który odpali callback onFulfilled i zawoła resolve na promise zwróconej z .then.
+
+m1, m3, m2, timeout
+
+m3 przed m2 bo najpierw kolejkujemy m3 a następnie dopiero m2. 
+
+
+
+
+
+
+
+
+
 
 
 

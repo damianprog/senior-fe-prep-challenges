@@ -51,7 +51,8 @@ export class MyPromise<T> {
 
   then<R = T>(onFulfilled: OnFulfilled<T, R>, onRejected?: OnRejected<R>) {
     const handler: THandler = {
-      onFulfilled: typeof onFulfilled === "function" ? onFulfilled : (v: any) => v, // because value can be null
+      onFulfilled:
+        typeof onFulfilled === "function" ? onFulfilled : (v: any) => v, // because value can be null
       onRejected:
         typeof onRejected === "function"
           ? onRejected
@@ -104,8 +105,12 @@ export class MyPromise<T> {
           const value = handler(this.value);
           if (value instanceof MyPromise) {
             value.then(resolve, reject);
+          } else {
+            resolve(value);
           }
-        } catch (e) {}
+        } catch (e) {
+          reject(e);
+        }
       });
     }
 

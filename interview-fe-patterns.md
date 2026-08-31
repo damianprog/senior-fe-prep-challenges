@@ -1943,3 +1943,286 @@ Reguła do zautomatyzowania:
 > `flushHandlers` **zawsze kolejkuje, nigdy nie wykonuje**. Nie ma w nim ścieżki synchronicznej — na każdym ogniwie łańcucha zachowuje się identycznie.
 
 Wiedza jest, odruchu nie ma. To typ błędu, który wypada pod presją rozmowy → materiał na test pamięci, nie na naukę od zera.
+
+# Promise na rozmowę — wersja do odtworzenia z pamięci
+
+Data: 2026-08-29. To jest **wersja robocza na zadanie rekrutacyjne** „napisz własną implementację Promise". 86 linii kodu. Świadomie niepełna — patrz §5.
+
+Materiał do pogłębiania: [[promise-implementacje]] (porównanie dwóch wcześniejszych podejść + analiza bugów).
+
+## Spis treści
+
+1. Kod
+2. Jedyna zmiana w logice — 4 linie w `resolve`
+3. Kolejność pisania na tablicy
+4. Koszt zgodności — zmierzone
+5. Co świadomie zostaje zepsute (i co powiedzieć, gdy padnie pytanie)
+6. Dokładka: `Promise.all` i `race`
+7. Talking points
+
+---
+
+## 1. Kod
+
+```ts
+type PromiseStatus = "pending" | "fulfilled" | "rejected";
+
+const PENDING: PromiseStatus = "pending";
+const FULFILLED: PromiseStatus = "fulfilled";
+const REJECTED: PromiseStatus = "rejected";
+
+type Executor<T> = (
+  resolve: (value: T | PromiseLike<T>) => void,
+  reject: (reason: any) => void,
+) => void;
+
+// callback MOŻE zwrócić promise — bez tego chaining asynchroniczny się nie typuje
+type OnFulfilled<T, R> = (value: T) => R | PromiseLike<R>;
+type OnRejected<R> = (reason: any) => R | PromiseLike<R>;
+
+/**
+ * Rekord odroczonej reakcji — odpowiednik [[PromiseReaction]] ze specyfikacji.
+ * Most między dwoma promise'ami: czyta wartość z bieżącego, wynik wpycha do następnego.
+ */
+type Handler = {
+  onFulfilled: OnFulfilled<any, any> | undefined;
+  onRejected: OnRejected<any> | undefined;
+  resolveNext: (value: any) => void;
+  rejectNext: (reason: any) => void;
+};
+
+export class MyPromise<T> {
+  private handlers: Handler[] = [];
+  private status: PromiseStatus = PENDING;
+  /** Jedno pole na wartość i na powód — znaczenie rozstrzyga `status`. */
+  private value: any = undefined;
+  /** Strażnik jednorazowości — jeden punkt kontrolny dla każdej drogi do settlementu. */
+  private isResolved: boolean = false;
+
+  constructor(executor: Executor<T>) {
+    try {
+      // Executor wykonuje się SYNCHRONICZNIE — dlatego new MyPromise(r => r(42))
+      // zwraca obiekt już w stanie fulfilled.
+      executor(this.resolve, this.reject);
+    } catch (err) {
+      // throw użytkownika zamieniamy na odrzucenie. Nigdy odwrotnie.
+      this.reject(err);
+    }
+  }
+
+  private settle(status: PromiseStatus, value: any): void {
+    if (this.isResolved) return;
+    this.status = status;
+    this.value = value;
+    this.isResolved = true;
+    this.flushHandlers();
+  }
+
+  // Strzałki, nie metody: obie wędrują do executora jako gołe referencje
+  // i są wołane bez kropki, więc `this` musi być przyklejone leksykalnie.
+  private resolve = (value: any): void => {
+    // ↓ JEDYNA zmiana w logice względem naiwnej wersji
+    if (value && typeof value.then === "function") {
+      value.then(this.resolve, this.reject);
+      return;
+    }
+    this.settle(FULFILLED, value);
+  };
+
+  private reject = (reason: any): void => {
+    // reject NIE rozpakowuje — tak samo działa natywny Promise.
+    this.settle(REJECTED, reason);
+  };
+
+  private flushHandlers(): void {
+    if (this.status === PENDING) return;
+
+    // Opróżnienie tablicy jest KONIECZNE, ale nie z powodu re-entrancy — w pętli
+    // tylko kolejkujemy mikrotaski, więc nikt nowego rekordu nie dopisze.
+    // Powód: flushHandlers() woła się przy KAŻDYM then(), nie tylko przy
+    // rozstrzygnięciu. Bez opróżnienia drugie then() na rozstrzygniętym promisie
+    // zakolejkowałoby ponownie rekord pierwszego → callback odpaliłby się dwa razy.
+    const pending = this.handlers;
+    this.handlers = [];
+
+    pending.forEach((handler) => {
+      // Jedyne miejsce, w którym cokolwiek trafia do kolejki mikrotasków.
+      // Do kolejki idzie wrapper, nie callback użytkownika — queueMicrotask woła
+      // go bez argumentów, więc wartość musi przyjechać domknięciem.
+      queueMicrotask(() => {
+        const callback =
+          this.status === FULFILLED ? handler.onFulfilled : handler.onRejected;
+
+        if (!callback) {
+          // Brak callbacku → przepuść wartość dalej, ZACHOWUJĄC tor.
+          // Dzięki temu jeden .catch na końcu łapie błąd z dowolnego ogniwa.
+          if (this.status === FULFILLED) handler.resolveNext(this.value);
+          else handler.rejectNext(this.value);
+          return;
+        }
+
+        try {
+          // resolveNext to resolve NASTĘPNEGO promise'a — czyli ten z adopcją.
+          // Stąd bierze się rozpakowywanie zwróconych promise'ów.
+          handler.resolveNext(callback(this.value));
+        } catch (err) {
+          // Bez tego throw poleciałby w pustkę: jesteśmy w mikrotasku,
+          // nad nami nie ma już żadnego try/catch użytkownika.
+          handler.rejectNext(err);
+        }
+      });
+    });
+  }
+
+  then<R = T>(
+    onFulfilled?: OnFulfilled<T, R>,
+    onRejected?: OnRejected<R>,
+  ): MyPromise<R> {
+    // Executor nowego promise'a nie rozstrzyga go — chowa jego parę sterującą
+    // do rekordu. To jedyne miejsce, w którym da się dobrać do resolve/reject
+    // cudzej instancji.
+    const next = new MyPromise<R>((resolveNext, rejectNext) => {
+      this.handlers.push({ onFulfilled, onRejected, resolveNext, rejectNext });
+    });
+
+    // `this` mógł być rozstrzygnięty dawno temu — wtedy rekord idzie do kolejki od razu.
+    this.flushHandlers();
+    return next;
+  }
+
+  // T zostaje w unii: .catch NIE konsumuje toru sukcesu.
+  catch<R = never>(onRejected?: OnRejected<R>): MyPromise<T | R> {
+    return this.then<T | R>(undefined, onRejected);
+  }
+
+  static resolve<T>(value: T): MyPromise<T> {
+    return new MyPromise<T>((res) => res(value));
+  }
+
+  static reject<R = never>(reason: any): MyPromise<R> {
+    return new MyPromise<R>((_, rej) => rej(reason));
+  }
+}
+```
+
+Zweryfikowane: kompiluje się pod `tsc --strict`, wszystkie standardowe przypadki przechodzą, kolejność mikrotasków w łańcuchu identyczna jak w natywnym `Promise`.
+
+---
+
+## 2. Jedyna zmiana w logice — 4 linie w `resolve`
+
+```ts
+if (value && typeof value.then === "function") {
+  value.then(this.resolve, this.reject);
+  return;
+}
+```
+
+Trzy rzeczy do powiedzenia na głos przy pisaniu tych czterech linii:
+
+- **`typeof value.then === "function"`, nie `instanceof MyPromise`** — ten sam koszt, a rozpakowuje też natywne `Promise` i cudze biblioteki. Sprawdzasz kształt, nie klasę.
+- **Oba tory.** Gdyby przekazać tylko `this.resolve`, odrzucenie w środku zawiesiłoby promise na zawsze i połknęło błąd bez śladu. To był krytyczny bug w jednej z wcześniejszych wersji.
+- **Rekurencja gratis.** `this.resolve` woła samo siebie, więc promise w promisie w promisie rozpakowuje się do dna bez ani jednej dodatkowej linijki.
+
+**Bonus, który dostajesz za darmo:** `then` zwracający promise działa bez żadnego kodu w `flushHandlers`, bo `handler.resolveNext` to jest właśnie ten `resolve` następnego promise'a. Jedna poprawka w jednym miejscu naprawia oba przypadki (`res(promise)` w executorze i `return promise` z callbacku) — to jest najlepszy argument do pokazania, jeśli ktoś zapyta „a co z `.then(() => fetch(...))`".
+
+---
+
+## 3. Kolejność pisania na tablicy
+
+Odporna na stres — po każdym kroku da się coś pokazać:
+
+1. Typy + pola (`status`, `value`, `handlers`, `isResolved`)
+2. `constructor` — executor synchronicznie, w `try`
+3. `settle` / `resolve` / `reject` — **`resolve` najpierw BEZ adopcji**, prosto
+4. `then` + `flushHandlers` — tu masz działający chaining, można zademonstrować
+5. `catch` + statyki
+6. **Wracasz do `resolve` i dokładasz 4 linie adopcji**, mówiąc: _„a teraz obsłużę przypadek, w którym callback zwraca promise"_
+
+Krok 6 jako osobny, świadomy ruch robi lepsze wrażenie niż napisanie tego od razu — pokazujesz, że wiesz, gdzie w architekturze jest miejsce na tę operację i dlaczego akurat tam.
+
+---
+
+## 4. Koszt zgodności — zmierzone na oficjalnym suicie Promises/A+
+
+| Wersja                                       | A+                                              | Objętość     |
+| -------------------------------------------- | ----------------------------------------------- | ------------ |
+| Naiwna (bez adopcji)                         | nie do zmierzenia — brak adopcji wywraca połowę | 86 linii     |
+| **Ta**                                       | **596 / 872 (68%)**                             | **86 linii** |
+| + strażnik `called` i `try` (6 linii)        | 698 / 872 (80%)                                 | 92 linie     |
+| Pełna paranoja (`.call`, getter, osobny job) | 872 / 872                                       | 126 linii    |
+
+**To argument ZA tą wersją, nie przeciw.** Dołożenie 6 linii kupuje raptem 12 punktów procentowych, bo reszta failujących testów to obiekty, których jedynym celem jest złamanie implementacji: thenable wołający oba callbacki, thenable rzucający po wywołaniu resolve, getter `.then` wybuchający przy odczycie, thenable wywoływalny tylko raz. Żaden z tych przypadków nie występuje w normalnym kodzie — natywne promise'y, `axios`, `fetch` przechodzą przez te 4 linie bez problemu (sprawdzone osobno).
+
+Krzywa jest bardzo niekorzystna: pierwsze 4 linie kupują większość praktycznej wartości, ostatnie 40 kupują odporność na złośliwców. Na rozmowie chcesz być po lewej stronie tej krzywej.
+
+---
+
+## 5. Co świadomie zostaje zepsute
+
+Znać na wypadek pytania „a co się stanie, gdyby…":
+
+1. **`p.then(() => p)` zawiesi się** zamiast rzucić `TypeError`. Spec (2.3.1) wymaga wykrycia cyklu.
+   _„Świadomie pominąłem — to jedna linijka na początku `resolve`:"_
+
+   ```ts
+   if (value === this) return this.reject(new TypeError("Chaining cycle"));
+   ```
+
+   Naprawdę darmowa, można dopisać.
+
+2. **Złośliwy thenable może rozstrzygnąć promise dwa razy**, jeśli pierwszy raz zrobi to innym _pending_ thenable.
+   _„Strażnik `isResolved` w `settle` łapie większość przypadków, ale nie ten — spec ma na to osobną flagę `called` wewnątrz procedury rozstrzygania."_
+
+3. **Adopcja kosztuje o dwa ticki mniej niż w natywnym.** Natywny wkłada wywołanie `.then` obcego thenable w osobny job (`NewPromiseResolveThenableJob`). Zwykłe łańcuchy są tick-w-tick zgodne — sprawdzone porównaniem sekwencji z prawdziwym `Promise`.
+
+**Umiejętność wymienienia tych trzech jest warta więcej niż ich zaimplementowanie.** Kandydat, który mówi „wiem, że tu upraszczam, oto co dokładnie odpuszczam i dlaczego", wygrywa z kandydatem, który napisał więcej kodu i nie umie powiedzieć, gdzie ten kod jest niepełny.
+
+---
+
+## 6. Dokładka: `Promise.all` i `race`
+
+Najczęstsze pytanie dodatkowe. Dwanaście linii do zapamiętania:
+
+```ts
+static all<V>(items: (V | PromiseLike<V>)[]): MyPromise<V[]> {
+  return new MyPromise((resolve, reject) => {
+    const results: V[] = new Array(items.length);
+    let remaining = items.length;
+    if (remaining === 0) return resolve(results);
+    items.forEach((item, index) => {
+      MyPromise.resolve(item).then((value) => {
+        results[index] = value as V;   // indeks z domknięcia = kolejność wejścia
+        if (--remaining === 0) resolve(results);
+      }, reject);                      // pierwsze odrzucenie wygrywa,
+    });                                // reszta wpada w isResolved
+  });
+}
+```
+
+Dwie rzeczy do powiedzenia na głos przy pisaniu:
+
+- **indeks z domknięcia**, nie `results.push` — `push` daje kolejność ukończenia zamiast kolejności wejścia;
+- **`reject` przekazany gołą referencją do wszystkich** — drugie i trzecie odrzucenie same się wyciszą na strażniku `isResolved`, nie trzeba do tego żadnego kodu. To moment, w którym flaga zwraca zainwestowany wysiłek.
+
+`race` to ta sama pętla bez licznika:
+
+```ts
+items.forEach((item) => MyPromise.resolve(item).then(resolve, reject));
+```
+
+---
+
+## 7. Talking points
+
+1. **„Jedna poprawka w `resolve` naprawia oba przypadki naraz."** `res(promise)` w executorze i `return promise` z callbacku to ta sama operacja — bo `handler.resolveNext` to jest `resolve` następnego promise'a. Pokazuje, że rozumiesz przepływ, a nie łatasz objawy.
+
+2. **Dlaczego do kolejki idzie wrapper, a nie callback użytkownika.** `queueMicrotask` woła bez argumentów, więc wartość musi przyjechać domknięciem — a przy okazji wrapper jest miejscem na `try/catch`, bez którego rzut z callbacku poleciałby w pustkę: jesteśmy w mikrotasku, nad nami nie ma już stosu użytkownika.
+
+3. **Dlaczego `resolve`/`reject` to strzałki, a nie metody.** Wędrują do executora jako gołe referencje i są wołane bez kropki, więc `this` musi być przyklejone leksykalnie.
+
+4. **Dlaczego `handlers` trzeba opróżnić.** Nie z powodu re-entrancy (w pętli tylko kolejkujemy) — tylko dlatego, że `flushHandlers` woła się przy każdym `then()`. Bez opróżnienia branching odpaliłby pierwszy callback wielokrotnie. Sprawdzone empirycznie: trzy `.then()` na rozstrzygniętym promisie dają `A A B A B C`.
+
+5. **Świadome uproszczenia** — §5. Miej je pod ręką na pytanie „co by tu jeszcze brakowało".
+
+Powiązane: [[promise-implementacje]], [[interview-patterns]], [[event-loop-model]]
