@@ -2185,32 +2185,209 @@ m3 przed m2 bo najpierw kolejkujemy m3 a następnie dopiero m2.
 
 
 
+async function bar() {
+  console.log('bar');
+}
+
+async function foo() {
+  console.log('foo start');
+  await bar();
+  console.log('foo end');
+}
+
+console.log('script start');
+foo();
+Promise.resolve().then(() => console.log('promise'));
+console.log('script end');
+
+
+"script start"
+
+a przy tym foo() nie powinno być await? Może to jakaś podpucha.
+
+"foo start"
+
+"bar"
+
+"foo end"
+
+wywołanie callbacku: "() => console.log('promise')" zakolejkowane do microtaskQueue
+
+"script end"
+
+pętla zdarzeń przechodzi do drenażu microtasków więc dopiero teraz 
+"promise"
+
+
+foo() wołane bez await na top-levelu to zwykły fire-and-forget: funkcja startuje, zwraca promise, nikt na niego nie czeka
+
+co to oznacza dla wykonywania wnętrza foo?
+
+Przepisać foo bez async/await na gołych promisach
+
+async function foo() {
+  console.log('foo start');
+  await bar();
+  console.log('foo end');
+}
+
+function foo() {
+  console.log('foo start');
+  return bar().then(() => {
+    console.log('foo end');
+  });
+}
+
+kiedy wykonuje się callback przekazany do then?
+
+Wszystko po await w ciele funkcji to jest callback .then. await zawsze zawiesza funkcję i oddaje sterowanie w górę, nawet jeśli czeka na wartość, która już jest gotowa. Nawet await 42 zawiesza.
+
+question:
+ale co zmienia await lub jego brak przed foo()?
+
+
+
+async function bar() {
+  console.log('bar');
+}
+
+async function foo() {
+  console.log('foo start');
+  await bar();
+  console.log('foo end');
+}
+
+console.log('script start');
+foo();
+Promise.resolve().then(() => console.log('promise'));
+console.log('script end');
+
+
+"script start"
+
+brak await przed foo() czyli to co jest po foo() NIE jest w callbacku .then
+
+function foo() {
+  console.log('foo start');
+  return bar().then(() => {
+    console.log('foo end');
+  });
+}
+
+
+"foo start"
+
+"bar"
+
+callback z "foo end" jest kolejkowany do microtaskQueue
+
+callback z "promise" jest kolejkowany do microtaskQueue
+
+"script end"
+
+"foo end"
+
+"promise"
+
+czyli podsumowując wynik to:
+
+"script start"
+
+"foo start"
+
+"bar"
+
+"script end"
+
+"foo end"
+
+"promise"
 
 
 
 
+async function bar() {
+  console.log('bar');
+}
+
+async function foo() {
+  console.log('foo start');
+  await bar();
+  console.log('foo end');
+}
+
+console.log('script start');
+await foo();
+Promise.resolve().then(() => console.log('promise'));
+console.log('script end');
+
+"script start"
+
+"foo start"
+
+"bar"
+
+do microtaskQueue jest kolejkowany callback z "foo end"
+
+do microtaskQueue jest kolejkowany callback ze wszystkim po lini z foo
+
+pętla zdarzeń wykonała macrotask <script>
+
+teraz przechodzimy do drenażu microtasków
+
+"foo end"
+
+do kolejki microtasków jest dodany callback z "promise"
+
+callback wykonuje się dalej i
+
+"script end"
+
+i ostatni microtask w queue to
+
+"promise"
+
+więc podsumowując wynik to:
+
+"script start"
+
+"foo start"
+
+"bar"
+
+"foo end"
+
+"script end"
+
+"promise"
 
 
+function foo() {
+  console.log('foo start');
+  return bar().then(() => {
+    console.log('foo end');
+  });
+}
 
+a tutaj wnętrze bar jest przekazywane do tej promise którą zwraca bar() jako executor?
 
+Nie. To jest dobre pytanie i warto mieć na nie precyzyjną odpowiedź, bo brzmi podobnie, a mechanizm jest inny.
 
+Co robi silnik przy wywołaniu funkcji async:
 
+Najpierw tworzy promise — pusty, pending. Zatrzymuje sobie na boku jego resolve i reject (spec nazywa to promise capability).
+Potem zaczyna wykonywać ciało, synchronicznie, na bieżącym stosie — aż do pierwszego await, return albo throw.
+Gdy ciało zwróci → silnik woła zapamiętany resolve. Gdy rzuci → reject.
 
+Ciało nie jest nigdzie przekazywane. Nie ma tu wywołania funkcji z argumentami (resolve, reject). Ciało to jest ciało funkcji, a resolve/reject silnik trzyma poza zasięgiem Twojego kodu.
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+Promise.resolve()
+  .then(() => { throw new Error('boom'); })
+  .then(() => console.log('A'))
+  .catch((e) => { console.log('B:', e.message); return 'z'; })
+  .then((v) => console.log('C:', v))
+  .finally(() => 'ignorowane?')
+  .then((v) => console.log('D:', v));
 
 
 
