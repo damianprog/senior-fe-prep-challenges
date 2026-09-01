@@ -2390,6 +2390,96 @@ Promise.resolve()
   .then((v) => console.log('D:', v));
 
 
+Promise resolve zwraca promise która jest fulfilled w tym przypadku z value undefined.
+
+then tworzy nową promise oraz handler w którym onFulfilled jest callbackiem przekazanym do .then, onRejected undefined, oraz funkcje sterujące nowo tworzonej promise. Handler jest dodany do handlerow pierwszej promise.
+
+flushHandler i z racji że pierwsza promise jest fulfilled czyli nie pending
+do kolejki microtasków zostaje dodany wrapper w którym uruchomiony będzie callback onFulfilled a wartość którą zwróci zostanie wykorzystana do resolve drugiej promise (tej zwroconej z then).
+
+na promise zwroconej z pierwszego then uruchamiamy then z callbackiem onFulfilled i onRejected undefined. dodajemy handler do promise zwroconej z pierwszego then.
+
+flushHandlers ale funkcja zwraca early return bo promise zwrócona z pierwszego then jest pending. Także handler siedzi w promise zwroconej z pierwszego then
+
+na promise z drugiego then uruchamiamy catch
+catch zwraca promise wywołując na promise z drugiego then, then
+w then uruchomionym za posrednictwem catch dostajemy onFulfilled undefined, 
+i onRejected: (e) => { console.log('B:', e.message); return 'z'; }
+
+tworzymy nową promise której funkcje sterujące i onFulfilled undefined, onRejected callback dostarczony do catch przekazujemy do handlera 
+handlera który zostanie dodany do handlers z drugiego then w snippecie
+
+flushHandlers ale promise zwrocona z drugiego then w snippecie jest pending więc early return.
+
+także handler siedzi w handlers promise zwroconej z drugiego then
+
+teraz na promise zwroconej z catch wywołujemy then z callbackiem onFulfilled:
+(v) => console.log('C:', v), i onRejected undefined
+handler z funkcjami sterującymi nowo tworzonej promise, onFulfilled, onRejected
+
+flushHandlers i early return bo promise zwrocona z catch jest pending
+także w promise zwroconej z catch siedzi handler
+
+teraz na promise zwroconej z then wywołujemy finally 
+w finally wołamy .then na tej promise przekazując w argumentach onFulfilled oraz onRejected. Czyli jakby nie było tj. promise rejected lub fulfilled uruchomimy przekazany callback do finally a value bądź reason przekażemy dalej
+
+flushHandlers i nic bo promise zwrocona z then jest pending
+
+czyli w promise zwroconej z then przed finally siedzi handler z funkcjami sterującymi promise zwroconej z finally
+
+na promise zwroconej z finally uruchamiamy then, tworzymy nową promise i handler z onFulfilled (v) => console.log('D:', v), onRejected undefined, i funkcjami sterującymi nowo tworzonej promise.
+
+flushHandlers i early return bo promise zwrocona z finally jest pending
+
+skrypt wykonany i pętla zdarzeń przechodzi do drenażu microtasków
+pomimo tylu handlerów w kolejce microtasków jest tylko 1 task
+po wykonaniu którego odpali się reszta ciągu
+
+także odpalamy wrapper status promise zwroconej ze statycznego resolve jest fulfilled więc callback to () => { throw new Error('boom'); }
+
+zweryfikować odtąd:
+
+odpalamy ten callback który rzuca error przez co try catch łapie ten error 
+i zamiast resolve kolejnej promise odpala reject jako wartość przekazując obiekt błędu.
+Więc status promise zwroconej z pierwszego then jest ustawiany na rejected
+value tej promise jest obiekt błędu i odpalamy flushHandlers na promise zwroconej z pierwszego .then w snippecie
+
+status jest rejected więc nie korzystamy z early returna
+
+momencik bo chyba się pomyliłem. Zweryfikować.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
