@@ -2437,8 +2437,6 @@ po wykonaniu którego odpali się reszta ciągu
 
 także odpalamy wrapper status promise zwroconej ze statycznego resolve jest fulfilled więc callback to () => { throw new Error('boom'); }
 
-zweryfikować odtąd:
-
 odpalamy ten callback który rzuca error przez co try catch łapie ten error 
 i zamiast resolve kolejnej promise odpala reject jako wartość przekazując obiekt błędu.
 Więc status promise zwroconej z pierwszego then jest ustawiany na rejected
@@ -2446,7 +2444,16 @@ value tej promise jest obiekt błędu i odpalamy flushHandlers na promise zwroco
 
 status jest rejected więc nie korzystamy z early returna
 
-momencik bo chyba się pomyliłem. Zweryfikować.
+callback jest ustawiany na onRejected a onRejected w tym handlerze to undefined
+
+onFulfilled () => console.log('A') nie ruszamy zatem nigdy nie będzie on wykonany
+
+wywołujemy reject na promise zwroconej z drugiego then
+przekazując value czyli obiekt błędu
+
+czyli teraz powinniśmy wykonać handlers z promise z drugiego then
+
+a my robiliśmy co?
 
 
 
@@ -2454,7 +2461,31 @@ momencik bo chyba się pomyliłem. Zweryfikować.
 
 
 
+zatem status promise zwroconej z drugiego then to rejected, value obiekt błędu
+settle promise z drugiego then woła flushHandlers
 
+status to rejected także nie pending więc nie korzystamy z early returna
+
+callback to handler.onRejected a ten nie został dostarczony także undefined
+
+brak callbacku, przepuszczamy value dalej a value to obiekt błędu
+uruchamiamy reject na promise zwroconej z catch z value jako obiekt błędu
+
+settle rejcted, value obiekt błędu
+
+flushHandlers na promise zwroconej z catch
+
+callback onRejected który jest: 
+(e) => { console.log('B:', e.message); return 'z'; }
+
+zatem wywołujemy powyższy callback drukując w konsoli B: "boom" i to jest pierwsze co drukujemy w konsoli dotychczas. A wartość którą zwraca ten callback czyli "z" przekazujemy do resolve na promise zwroconej z then które jest po catch w snippecie.
+
+.catch((e) => { console.log('B:', e.message); return 'z'; })
+  .then((v) => console.log('C:', v))
+
+promise zwrocona z then przechodzi w status fulfilled z value "z"
+
+flushHandlers na promise zwroconej z then
 
 
 
