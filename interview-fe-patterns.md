@@ -2226,3 +2226,61 @@ items.forEach((item) => MyPromise.resolve(item).then(resolve, reject));
 5. **Świadome uproszczenia** — §5. Miej je pod ręką na pytanie „co by tu jeszcze brakowało".
 
 Powiązane: [[promise-implementacje]], [[interview-patterns]], [[event-loop-model]]
+
+## Trace łańcucha Promise — dwa miejsca, w których się wykłada
+
+**Zadanie:** przetraceować `Promise.resolve().then(throw).then(A).catch(B).then(C).finally().then(D)`
+własnym modelem implementacji (handlers + flushHandlers + queueMicrotask).
+Wynik: `B: boom` / `C: z` / `D: undefined`.
+
+### Luka 1 — „brak złożenia": handler mieszka gdzie indziej, niż steruje
+
+Przy propagacji odrzucenia zgubiłem ogniwo: uznałem, że w `handlers` promise'a
+zwróconego z `catch` siedzi callback przekazany **do** `catch`. Strukturalnie
+niemożliwe.
+
+**Reguła:** handler mieszka na promisie, na którym wołasz `.then`;
+steruje promisem, który `.then` **zwraca**. Źródło ≠ cel.
+
+Objaw off-by-one: `C:` znika z outputu, a `D:` drukuje `z` zamiast `undefined`.
+Test diagnostyczny — jeśli w łańcuchu z `catch` gubi ci się dokładnie jeden
+`console.log`, sprawdź właśnie to.
+
+### Luka 2 — „detal": granulacja mikrotasków
+
+Opisywałem kaskadę throw → reject → reject → catch jako jeden ciąg w jednym
+mikrotasku. `flushHandlers` woła wyłącznie `queueMicrotask` — nic nie leci
+synchronicznie. **Jeden tick na ogniwo.** `B: boom` drukuje się w ticku 3,
+nie w tym, w którym poleciał `throw`. Bez tego przeplot z natywnymi
+promise'ami wychodzi źle.
+
+### `finally` — dlaczego zwrotka callbacka jest ignorowana
+
+Pozorna sprzeczność: `then` zawsze resolve'uje następny promise zwrotką
+handlera, więc jak `finally` przepuszcza starą wartość?
+
+Bo `finally` **nie rejestruje twojego callbacka jako `onFulfilled`** —
+rejestruje opakowania, a callback siedzi w środku:
+
+```js
+(v) => {
+  cb();
+  return v;
+}; // zwraca v z domknięcia, nie cb()
+(r) => {
+  cb();
+  throw r;
+}; // rethrow, nie return
+```
+
+Reguła `then` bez zmian; zmienia się tylko to, co jest handlerem.
+
+- **Asymetria jest nośna.** Tor błędu musi robić `throw r`. `return r`
+  zamieniłoby odrzucenie w spełnienie — najczęstszy bug w domowych `finally`.
+- **Wersja zgodna ze spec czeka:** `(v) => Promise.resolve(cb()).then(() => v)`.
+  Zwrotka jest ignorowana jako **wartość**, ale nie jako **czas** — thenable
+  z `cb` wstrzymuje łańcuch, a jego odrzucenie nadpisuje oryginalny wynik.
+- Rzut z `cb` nadpisuje wszystko, nawet gdy oryginał był fulfilled.
+
+Powiązane: [[promise-implementacje]] (§9 — `finally` na liście braków
+własnej implementacji), [[event-loop-model]]

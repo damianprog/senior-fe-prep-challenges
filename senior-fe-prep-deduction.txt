@@ -2421,7 +2421,12 @@ flushHandlers i early return bo promise zwrocona z catch jest pending
 także w promise zwroconej z catch siedzi handler
 
 teraz na promise zwroconej z then wywołujemy finally 
-w finally wołamy .then na tej promise przekazując w argumentach onFulfilled oraz onRejected. Czyli jakby nie było tj. promise rejected lub fulfilled uruchomimy przekazany callback do finally a value bądź reason przekażemy dalej
+w finally wołamy .then na tej promise przekazując w argumentach onFulfilled oraz onRejected. Czyli jakby nie było tj. promise rejected lub fulfilled uruchomimy przekazany callback do finally 
+
+question:
+a value bądź reason przekażemy dalej
+tylko to nie value / reason zwrocone z tego callbacka przekazanego do finally?
+Nie rozumiem tego
 
 flushHandlers i nic bo promise zwrocona z then jest pending
 
@@ -2453,7 +2458,70 @@ przekazując value czyli obiekt błędu
 
 czyli teraz powinniśmy wykonać handlers z promise z drugiego then
 
-a my robiliśmy co?
+kontynuując, handlers z promise z drugiego then zostały tam dodane za pośrednictwem .catch
+
+czyli teraz będziemy się zajmować handlerem który w onRejected zawiera ten callback który został przekazany do catch jako argument czyli 
+(e) => {
+    console.log("B:", e.message);
+    return "z";
+  }
+  
+status promise na której wykonujemy flushHandlers czyli tej zwroconej z drugiego then jest rejected a jej value to obiekt błędu
+
+czyli status to rejected i callback onRejected jest dostarczony
+
+wywołujemy ten callback zatem w konsoli wypisuje się "B:boom"
+callback zwraca wartość "z"
+i z tą wartością wywołujemy resolve na promise zwroconej z catch
+
+status promise zwroconej z catch przechodzi w fulfilled
+a jej wartość to "z"
+
+w settle tej promise wołamy flushHandlers
+
+w handlers promise zwroconej z catch siedzi handler dostarczony przez kolejne wywołanie then w snippecie czyli (v) => console.log("C:", v)
+ten callback w tym handlerze jest to onFulfilled
+
+status promise zwroconej z catch jest fulfilled
+zatem wołamy ten callback, w konsoli wypisuje się "C:z" 
+i ten callback zwraca undefined 
+
+i wartość undefined zostaje przekazana do resolve promise zwróconej z then
+
+promise zwrocona z then przechodzi w status fulfilled
+a jej wartość to undefined
+
+flushHandlers na tej promise
+
+onFulfilled na tej promise to (v) => { cb(); return v; }
+czyli callback przekazany jako argument do finally się odpali natomiast
+do resolve promise zwroconej z finally zostanie przekazana wartość poprzedniej promise 
+
+promise zwrocona z finally przechodzi w status fulfilled
+jej wartość to undefined
+
+flushHandlers na promise zwroconej z finally
+status ten promise to fulfilled także callback to onFulfilled a ten został dostarczony jako argument w ostatnim then
+
+uruchamiamy callback w konsoli wypisujemy "D:undefined"
+i do resolve promise zwroconej z ostatniego then przekazujemy undefined
+
+ostatnia promise czyli ta zwrocona z ostatniego then
+przechodzi w status fulfilled a jej value to undefined. 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
