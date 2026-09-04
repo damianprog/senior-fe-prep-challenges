@@ -2501,59 +2501,241 @@ promise zwrocona z finally przechodzi w status fulfilled
 jej wartość to undefined
 
 flushHandlers na promise zwroconej z finally
-status ten promise to fulfilled także callback to onFulfilled a ten został dostarczony jako argument w ostatnim then
+status tej promise to fulfilled także callback to onFulfilled a ten został dostarczony jako argument w ostatnim then
 
-uruchamiamy callback w konsoli wypisujemy "D:undefined"
+uruchamiamy callback, w konsoli wypisujemy "D:undefined"
 i do resolve promise zwroconej z ostatniego then przekazujemy undefined
 
 ostatnia promise czyli ta zwrocona z ostatniego then
 przechodzi w status fulfilled a jej value to undefined. 
 
+czyli końcowy wynik w konsoli to łącznie:
 
+B:boom
+C:z
+D:undefined
 
+Promise predict przewidywanie promises przykłady
+Rozgrzewka
 
+1.
 
+js
+console.log('1');
+setTimeout(() => console.log('2'), 0);
+Promise.resolve().then(() => console.log('3'));
+console.log('4');
 
+2.
 
+js
+Promise.resolve().then(() => console.log('A1')).then(() => console.log('A2')).then(() => console.log('A3'));
+Promise.resolve().then(() => console.log('B1')).then(() => console.log('B2')).then(() => console.log('B3'));
 
+3.
 
+js
+setTimeout(() => console.log('timeout'), 0);
 
+Promise.resolve().then(() => {
+  console.log('m1');
+  queueMicrotask(() => console.log('m2'));
+});
 
+queueMicrotask(() => console.log('m3'));
+Środek
 
+4.
 
+js
+async function bar() {
+  console.log('bar');
+}
 
+async function foo() {
+  console.log('foo start');
+  await bar();
+  console.log('foo end');
+}
 
+console.log('script start');
+foo();
+Promise.resolve().then(() => console.log('promise'));
+console.log('script end');
 
+5.
 
-
-
-
-
-zatem status promise zwroconej z drugiego then to rejected, value obiekt błędu
-settle promise z drugiego then woła flushHandlers
-
-status to rejected także nie pending więc nie korzystamy z early returna
-
-callback to handler.onRejected a ten nie został dostarczony także undefined
-
-brak callbacku, przepuszczamy value dalej a value to obiekt błędu
-uruchamiamy reject na promise zwroconej z catch z value jako obiekt błędu
-
-settle rejcted, value obiekt błędu
-
-flushHandlers na promise zwroconej z catch
-
-callback onRejected który jest: 
-(e) => { console.log('B:', e.message); return 'z'; }
-
-zatem wywołujemy powyższy callback drukując w konsoli B: "boom" i to jest pierwsze co drukujemy w konsoli dotychczas. A wartość którą zwraca ten callback czyli "z" przekazujemy do resolve na promise zwroconej z then które jest po catch w snippecie.
-
-.catch((e) => { console.log('B:', e.message); return 'z'; })
+js
+Promise.resolve()
+  .then(() => { throw new Error('boom'); })
+  .then(() => console.log('A'))
+  .catch((e) => { console.log('B:', e.message); return 'z'; })
   .then((v) => console.log('C:', v))
+  .finally(() => 'ignorowane?')
+  .then((v) => console.log('D:', v));
 
-promise zwrocona z then przechodzi w status fulfilled z value "z"
+6.
 
-flushHandlers na promise zwroconej z then
+js
+async function f() {
+  try {
+    await Promise.reject(new Error('x'));
+    console.log('nigdy?');
+  } catch (e) {
+    console.log('caught');
+    return 'z catcha';
+  } finally {
+    console.log('finally');
+  }
+}
+
+f().then((v) => console.log('wynik:', v));
+console.log('sync');
+
+7.
+
+js
+setTimeout(() => {
+  console.log('t1');
+  Promise.resolve().then(() => console.log('p1'));
+}, 0);
+
+setTimeout(() => {
+  console.log('t2');
+  Promise.resolve().then(() => console.log('p2'));
+}, 0);
+
+Dopytka do 7: czy ta odpowiedź byłaby taka sama w Node 10? Dlaczego to pytanie w ogóle ma sens?
+
+Paskudne
+
+8.
+
+js
+const p = (n, ms, fail) =>
+  new Promise((res, rej) =>
+    setTimeout(() => {
+      console.log('settle', n);
+      fail ? rej(n) : res(n);
+    }, ms),
+  );
+
+Promise.all([p(1, 30), p(2, 10, true), p(3, 20)])
+  .then((v) => console.log('all', v))
+  .catch((e) => console.log('catch', e));
+
+9.
+
+js
+Promise.resolve()
+  .then(() => { console.log(0); return Promise.resolve(4); })
+  .then((res) => console.log(res));
+
+Promise.resolve()
+  .then(() => console.log(1))
+  .then(() => console.log(2))
+  .then(() => console.log(3))
+  .then(() => console.log(5))
+  .then(() => console.log(6));
+
+10.
+
+js
+const p = new Promise((resolve) => {
+  console.log('exec');
+  resolve({
+    then(cb) {
+      console.log('thenable');
+      cb('v');
+    },
+  });
+});
+
+p.then((v) => console.log('then', v));
+console.log('sync end');
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+async function f() {
+  try {
+    await Promise.reject(new Error('x'));
+    console.log('nigdy?');
+  } catch (e) {
+    console.log('caught');
+    return 'z catcha';
+  } finally {
+    console.log('finally');
+  }
+}
+
+f().then((v) => console.log('wynik:', v));
+console.log('sync');
+
+
+wykonywanie ciała funkcji async dzieje się synchronicznie?
+
+Tak - ciało async wykonuje się synchronicznie aż do pierwszego await. Dalej to już mikrozadanie.
+
+
+funkcja async zwraca promise
+
+zaczynamy wykonywanie funkcji f() 
+
+wywołujemy static function reject na Promise
+static reject tworzy nowy promise
+
+w executorze nowej Promise wołamy this.reject z argumentem reason jako obiekt błędu
+
+promise jest resolved, ze statusem rejected i value jako obiekt błędu
+
+ale gdzie jest ten rzut? nie uruchamiamy w kodzie zadnego throw
+
+Rzut nie jest w kodzie — robi go silnik, przy wznawianiu funkcji.
+
+to co jest po await czyli wznowienie funkcji którą przerwaliśmy await
+przechodzi do handlerów promise zwroconej ze static reject
+
+i to jest moment kolejkowania pierwszego microtaska który będzie wznowieniem funkcji? Tak
+
+Silnik ma dwa tryby wznowienia (tak jak generator ma .next() i .throw()) i przy odrzuceniu wybiera drugi: wznawia f tak, jakby w miejscu await stało throw e. Dlatego łapie to zwykły try/catch, a linia pod await jest nieosiągalna.
+
+wychodzimy z f() i zwracamy promise bo to async function
+uruchamiamy .then na tej promise przekazując callback onFulfilled
+i NIE przekazując onRejected
+
+także w then tworzymy nową promise 
+do handlerow promise zwroconej z f() dorzucamy handler zawierający
+onFulfilled, onRejected, i funkcje sterujące promise zwracanej z then
+
+uruchamiamy flushHandlers na promise zwroconej z f() 
+bo na niej było wywołane .then 
+ona się jeszcze nie wykonała, jest pending więc handler w niej jeszcze poczeka na zakolejkowanie
+
+przechodzimy do console.log("sync") także drukujemy w konsoli pierwszą rzecz czyli sync
+
+teraz pętla przechodzi do drenażu microtaskow
+
+pierwszy microtask to jest wywołanie 
+
+
+
+
+
+
+
+
 
 
 
