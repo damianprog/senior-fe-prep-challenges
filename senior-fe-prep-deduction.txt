@@ -2727,13 +2727,31 @@ przechodzimy do console.log("sync") także drukujemy w konsoli pierwszą rzecz c
 
 teraz pętla przechodzi do drenażu microtaskow
 
-pierwszy microtask to jest wywołanie 
+pierwszy microtask to jest ten gdzie jest wznowienie funkcji ale jak mam to rozumieć? 
+Callback w handlerze to jest onRejected który jest wznowieniem f() w trybie throw, po prostu wznawiamy i rzucamy error. Pomimo tego że wywolalismy implicitly .then to nie robimy resolveNext / rejectNext.
 
+także catch łapie error, wypisuje caught i jest to druga rzecz wypisana w konsoli
 
+funkcja f() zwraca "z catcha"
 
+a finally wykonuje się niezależnie od tego czy był catch czy nie
+więc trzecią rzeczą wypisaną w konsli jest finally
 
+mikrotask wznowienia funkcji się wykonał
 
+kolejka microtaków jest... pusta? W handlerach promise zwroconej z f() siedzi jeden handler czekający na zakolejkowanie. Czy przed zakończeniem mikrotaska wznowienia funkcji... Normalnie to wołanie w microtasku resolveNext powoduje flushHandlers (w settle)
 
+zanim wykona się do końca microtask wznowienia funkcji, wołany jest resolve promisa zwróconego z f(). Value przekazane do resolve to value zwrocona przez f(). 
+
+Więc promise zwrocona z f() jest w statusie fulfilled, jej value to "z catcha".
+Wołamy na niej flushHandlers, handler jest kolejkowany jako wrapper do kolejki microtaskow. I to wszystko działo się jeszcze wewnątrz poprzedniego microtaska.
+Także na koncu poprzedniego microtaska dodaliśmy kolejny do kolejki microtaskow.
+
+pętla zdarzen woła ten microtask
+
+callback to jest onFulfilled czyli (v) => console.log('wynik:', v)
+wołamy ten callback, w konsoli wypisuje się ostatnia rzecz czyli wynik: z catcha
+i ostatnia promise czyli ta zwrocona w then przechodzi w status fulfilled z value undefined
 
 
 

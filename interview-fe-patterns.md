@@ -2284,3 +2284,145 @@ Reguła `then` bez zmian; zmienia się tylko to, co jest handlerem.
 
 Powiązane: [[promise-implementacje]] (§9 — `finally` na liście braków
 własnej implementacji), [[event-loop-model]]
+
+## 9. async/await jako cukier na maszynie stanów
+
+> Rozpracowane 04.09.2026, tryb sokratejski. Punkt wyjścia: „gdzie jest ten
+> `throw`, skoro w kodzie nie ma żadnego `throw`?". Luka: **brak złożenia** —
+> wszystkie klocki (rekord `Handler`, dwa tory, kolejka) były na miejscu,
+> brakowało pojęcia „zawieszona ramka funkcji".
+
+**Kiedy się pojawia:** każde pytanie o kolejność logów z `async`, „ile ticków
+kosztuje `await`", „czym różni się `return x` od `return await x`", code review
+własnej implementacji Promise. Materiał towarzyszący: sekcje 4 i 6, artefakt
+_MyPromise od środka_ (widok Zagadki, pozycje 4 i 6).
+
+### 9.1 Sedno — trzy zdania
+
+1. Ciało `async` leci **synchronicznie** aż do pierwszego `await`.
+2. `await p` ≈ `p.then(wznówZWartością, wznówRzucając)` — rejestracja **pary**
+   callbacków na promisie, nie „pobranie wartości".
+3. Callbackiem nie jest kod użytkownika, tylko **domknięcie wygenerowane przez
+   silnik**, trzymające referencję do zawieszonej ramki funkcji.
+
+Zawieszona funkcja async to obiekt w pamięci: zapamiętana pozycja w ciele +
+żywe zmienne lokalne. Silnik ma dwa tryby jej wznowienia — dokładnie jak
+generator ma `.next(v)` i `.throw(e)`.
+
+Dlatego `flushHandlers` nie ma pojęcia, że obsługuje coś specjalnego. Widzi
+status `rejected`, bierze `handler.onRejected`, woła. Cała reszta dzieje się
+w środku tego wywołania.
+
+### 9.2 Desugaring, który rozstrzyga wszystkie pytania
+
+```js
+function f() {
+  // po zdjęciu cukru
+  const cap = withResolvers(); // promise zwracany przez f + jego para sterująca
+  let pc = 0; // gdzie w ciele jesteśmy
+
+  function step(mode, x) {
+    let ret;
+    try {
+      if (pc === 0) {
+        const p = Promise.reject(new Error("x"));
+        pc = 1;
+        p.then(
+          (v) => step("next", v),
+          (e) => step("throw", e),
+        );
+        return; // f oddaje sterowanie wołającemu
+      }
+      if (mode === "throw") throw x; // ← TU POWSTAJE RZUT
+      console.log("nigdy?");
+    } catch (e) {
+      console.log("caught");
+      ret = "z catcha";
+    } finally {
+      console.log("finally");
+    }
+    cap.resolve(ret); // ← dopiero to rozstrzyga promise f
+  }
+
+  step("next"); // pierwsze wejście — synchroniczne
+  return cap.promise;
+}
+```
+
+Jedna funkcja, dwa wejścia. Przeczytaj `step` dwa razy: raz z `pc = 0` (kod
+synchroniczny), raz z `pc = 1, mode = 'throw'` (mikrotask).
+
+`throw x` stoi **w środku `try`**, bo `await` stał w środku `try` — dlatego
+łapie to zwykły `try/catch`, a linia pod `await` jest nieosiągalna. Rzutu nie ma
+w kodzie użytkownika; produkuje go silnik przy wznawianiu ramki.
+
+### 9.3 Karta ticków
+
+| konstrukcja                                               | koszt                                                        |
+| --------------------------------------------------------- | ------------------------------------------------------------ |
+| `await` na natywnym, rozstrzygniętym promisie             | **1 tick**                                                   |
+| `await` na wartości (nie-thenable)                        | 1 tick                                                       |
+| ogon funkcji po ostatnim `await` (catch, finally, return) | **0 ticków** — leci synchronicznie na stosie tego mikrotasku |
+| `return promise` z `.then`                                | 2 dodatkowe ticki (`NewPromiseResolveThenableJob` + reakcja) |
+
+Reguła: **każdy `await` = jedno zawieszenie = jeden tick.** Nic innego w ciele
+funkcji ticków nie kosztuje. Wznowienie ramki to zwykłe wywołanie funkcji —
+reszta ciała leci synchronicznie, bo nie ma w niej drugiego zawieszenia.
+
+Historyczne: przed optymalizacją `await` (V8 7.2 / Node 12) było to **3 ticki**.
+Starsze materiały z inną kolejnością logów nie są błędne, są przedawnione.
+Ta sama klasa pułapki co Node ≤ 10 z drenażem mikrotasków po fazie timers —
+patrz artefakt, zagadka 7.
+
+### 9.4 Dwie drogi powrotne — najczęstsze sklejenie
+
+`await` rejestruje handler przez `.then`, więc odruch podpowiada, że wartość
+zwrócona z funkcji poleci przez `resolveNext` tego handlera. **Nie.**
+
+| droga                                    | co nią płynie                   | kto ją trzyma                |
+| ---------------------------------------- | ------------------------------- | ---------------------------- |
+| `onFulfilled` / `onRejected` handlera    | **wznowienie ramki**            | silnik, domknięcie nad ramką |
+| para sterująca promise'a funkcji (`cap`) | **wartość zwrócona z `return`** | ramka, od pierwszego wejścia |
+
+`resolveNext` handlera od `await` nie jest wołany nigdy. W spec ten promise
+w ogóle nie powstaje: `PerformPromiseThen` jest wołane **bez result capability**
+— rejestruje reakcje, nie produkując następnego promise'a. Własna implementacja
+`MyPromise` tej furtki nie ma (jej `then` zawsze robi `new`), więc powstaje
+sierota, której nikt nie odbiera.
+
+### 9.5 Pułapki
+
+- **`return` w `catch` nie kończy funkcji od razu.** Wartość jest zapamiętana,
+  wykonuje się `finally`, dopiero potem następuje powrót. Stąd `finally`
+  w konsoli **przed** wartością odebraną w `.then`. `return` w samym `finally`
+  nadpisuje tamtą wartość.
+- **`reject` ≠ `throw`** (powtórka z 4): `Promise.reject(x)` tylko ustawia stan
+  obiektu. Rzut pojawia się dopiero przy wznawianiu ramki, po drugiej stronie
+  kolejki.
+- **Podpięcie `await` oznacza odrzucenie jako obsłużone.** `Promise.reject(...)`
+  bez żadnego konsumenta daje `unhandledRejection`; z `await` w `try` — nie.
+- **Rekord od `await` nie czeka w gnieździe**, gdy promise jest już
+  rozstrzygnięty — `flushHandlers` przepycha go prosto do kolejki. W tym
+  snippecie gniazdo `P_rej` nie jest użyte ani razu.
+- **`resolve` promise'a funkcji dzieje się WEWNĄTRZ mikrotasku wznowienia**,
+  na jego stosie, zanim wrapper odda sterowanie. Dlatego kolejka nie jest pusta
+  na wyjściu z tego ticku.
+
+### 9.6 Ślad wykonania do odtworzenia na sucho
+
+```js
+async function f() {
+  try {
+    await Promise.reject(new Error("x"));
+    console.log("nigdy?");
+  } catch (e) {
+    console.log("caught");
+    return "z catcha";
+  } finally {
+    console.log("finally");
+  }
+}
+f().then((v) => console.log("wynik:", v));
+console.log("sync");
+// sync / caught / finally / wynik: z catcha
+```
