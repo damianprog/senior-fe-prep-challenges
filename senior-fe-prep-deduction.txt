@@ -2754,6 +2754,99 @@ wołamy ten callback, w konsoli wypisuje się ostatnia rzecz czyli wynik: z catc
 i ostatnia promise czyli ta zwrocona w then przechodzi w status fulfilled z value undefined
 
 
+07. 
+Dwa timery, dwa mikrotaski
+
+setTimeout(() => {
+  console.log('t1');
+  Promise.resolve().then(() => console.log('p1'));
+}, 0);
+setTimeout(() => {
+  console.log('t2');
+  Promise.resolve().then(() => console.log('p2'));
+}, 0);
+
+
+setTimeout wykonuje się natychmiast i rejestruje callback który ma się wykonać po 0ms
+
+drugi setTimeout wykonuje się natychmiast i rejestruje callback który ma się wykonać po 0ms 
+
+na końcu makrotaska <script> host już zdążył przenieść dwa callbacki do kolejki makrotaskow
+
+nie drenujemy microtaskow bo nie ma czego 
+
+kolejny obrót pętli i zaczynamy od wykonania macrotaska z pierwszym callbackiem
+
+drukujemy w konsoli t1
+
+static resolve() zwraca promise która jest fulfilled z value undefined
+
+wywołujemy na tej promise .then który tworzy nową promise oraz handler do handlers promise na której jest wywoływany .then
+
+handler wygląda tak
+onFulfilled: () => console.log('p1')
+onRejected: undefined
+i funckje sterujące nowo tworzonej promise
+
+po czym wołamy flushHandlers na promise na ktorej wywolalismy then
+
+promise nie jest pending więc nie wychodzimy early returnem z flushHandlers
+
+promise jest fulfilled zatem callback ktory wywolamy we wrapperze handlera
+to handler.onFulfilled czyli: () => console.log('p1') 
+wartość zwroconą z tego callbacku czyli undefined przekażemy do resolve następnej promise
+
+do microtaskQueue jest zakolejkowany wyżej opisany wrapper
+
+w tym momencie wykonaliśmy jednego macrotaska
+
+więc przechodzimy do drenażu microtaskow
+
+jest jeden z wyżej opisanym wrapperem
+
+wykonujemy go, drukujemy p1 i robimy resolve promise zwroconej z then z wartoscią undefined. Promise zworocna z then przechodzi w status fulfilled z value undefined
+
+jak dotychczas w konsoli wypisliśmy 
+t1 
+p1
+
+koniec drenażu microtaskow więc kolejny obrot pętli zdarzeń i wykonujemy kolejnego macrotaska czyli tego z callbackiem drugiego setTimeout
+
+zatem drukujemy w konsoli t2
+
+i robimy to samo co dla wcześniejszego macrotaska
+
+drenaż microtaskow skutkujący wypisaniem p2
+
+efekt koncowy w konsoli:
+
+t1
+p1
+t2
+p2
+
+PromiseLike<T> to wbudowany w TS interfejs opisujący cokolwiek z metodą .then.
+
+question:
+gdzie jeszcze w kodzie promise powinno być PromiseLike zamiast MyPromise?
+
+question:
+resolve promise with another promise 
+prześledzić wykonanie takiego kodu
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
