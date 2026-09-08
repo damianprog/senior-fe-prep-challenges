@@ -2844,6 +2844,31 @@ prześledzić wykonanie takiego kodu
 
 
 
+Promise.all
+
+static all<T> przyjmuje array items elementów typu T lub elementów PromiseLike o wartości typu T
+
+zwraca MyPromise o wartości arraya elementow typu T
+
+Tworzymy nowy obiekt MyPromise podając do konstruktora executor
+w którym siedzi cała logika all
+
+na początku executora tworzymy array results typu T[] o długości arraya dostarczonego do all czyli items
+
+robimy counter remaining = items.length
+
+jeżeli remaining wynosi 0 to wołamy resolve (przypominam że jesteśmy w executorze) przekazując pusty array results
+
+następnie mamy pętle po items
+
+i dla każdego wołamy static resolve jako argument przekazując ten item
+
+static resolve zwraca promise w statusie fulfilled z value argumentu przekazanego do static resolve
+
+na każdej takiej promise wołamy .then przekazując callback onFulfilled i onRejected który jest po prostu reject z executora promise tworzonej w static all
+
+
+
 
 
 
