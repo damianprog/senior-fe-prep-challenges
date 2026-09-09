@@ -2867,26 +2867,100 @@ static resolve zwraca promise w statusie fulfilled z value argumentu przekazaneg
 
 na każdej takiej promise wołamy .then przekazując callback onFulfilled i onRejected który jest po prostu reject z executora promise tworzonej w static all
 
+then dodaje do handlerów promise zwroconej ze static resolve
+
+po dodaniu handlera wołamy flushHandlers na promise zwroconej ze static resolve
+
+promise nie jest pending więc nie robimy early returna
+
+callbackiem jest onFulfilled 
+
+dodajemy wrapper handlera do kolejki mikrotasków
+
+question:
+ale jaki sens ma dodawanie onRejected do then który jest uruchamiany na promise zwroconej ze static resolve?
+Przecież mamy gwarancje że promise zwrocona ze static resolve będzie fulfilled
 
 
+const slow = (ms, v) => new MyPromise((res) => setTimeout(() => { console.log('settle', v); res(v) }, ms))
+const bad  = (ms, e) => new MyPromise((_, rej) => setTimeout(() => { console.log('settle', e); rej(e) }, ms))
+MyPromise.all([slow(10, 'a'), bad(20, 'X'), slow(30, 'c')])
+  .then((arr) => console.log('all', arr))
+  .catch((e) => console.log('catch', e))
 
 
+Do static all przekazujemy array promises
+static all zwróci nową promise 
+która będzie resolved z value która będzie arrayem o elementach typu string
+
+w arrayu przekazanym do all najpierw wykonujemy 
+funkcje slow(10,"a")
+która zwróci nam promise która w konstruktorze przekazuje executor 
+który woła setTimeout zatem rejestrujemy timer, 
+callback przekazany do setTimeout ma wydrukować "settle" 
+i zawołać argument resolve z value przekazanej do funkcji slow czyli "a"
+
+póki co nie wykonujemy jeszcze all tylko funkcje zwracające promises w arrayu przekazanym do all
+
+kolejna funkcja to bad(20,"X")
+
+która zwraca promise która w konstruktorze przekazuje executor
+w którym to executorze znowu wołany jest setTimeout ale tym razem po upłynięciu czasu zawołamy callback który ma wydrukowac "settle" i reject z value "X"
+
+kolejna funkcja to slow(30,"c")
+
+która działa tak jak pierwsza funkcja tylko że timer w niej zarejestrowany 
+ma 30 a nie 10, po tym czasie wydrukujemy "c" i promise zwrocona ze slow będzie resolved z value "c" 
+
+teraz mając array promises, wykonujemy static all
+
+wewnątrz static all tworzymy nową promise której value będzie arrayem stringow
+w konstruktorze tej promise przekazujemy executor 
+w ktorym się dzieje cała logika static all
+
+tworzymy array result ktory będzie rzyma elementy typu string o długości takiej jaką ma array item przekazany do static all, czyli ze slotem dla każdej promise
+
+jeśli tablica items jest pusta to wołamy resolve konstruktora promise tworzonej w static all z pustym array results i konczymy all
+
+ 
+dalej jeśli tablica nie jest pusta to iterujemy się po jej elementach
+a elementami są promises
+
+dla każdej promise wołamy static resolve który tworzy nową promise 
+i przekazujemy item (promise) jako value,
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+w private resolve wołamy .then na 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
 
 
 
