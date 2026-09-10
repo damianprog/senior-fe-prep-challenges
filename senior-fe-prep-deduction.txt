@@ -2927,14 +2927,27 @@ dalej jeśli tablica nie jest pusta to iterujemy się po jej elementach
 a elementami są promises
 
 dla każdej promise wołamy static resolve który tworzy nową promise 
-i przekazujemy item (promise) jako value,
+w konstruktorze promise tworzonej w static resolve, w executor function
+wołamy resolve przekazując value czyli obecnie iterowaną promise
+a w private resolve mamy warunek sprawdzający czy value jest thenable
+i jeśli jest a w tym przypadku jest thenable, to wołamy na niej then
+do then przekazujemy jako onFulfilled this.resolve i onRejected this.reject
+czyli kiedy obecnie iterowana promise się wykona to zawoła resolve promise tworzonej w static resolve
+i robimy return 
+
+w rezultacie ze static resolve otrzymujemy promise która jest resolved (bądź rejected) z value która jest value zwróconą z wykonania się obecnie iterowanej promise
+
+następnie na promise ze static resolve wołamy then
+w którym value (czyli value z resolved promise ze static resolve)
+wrzucamy do tabeli wynikowej results 
+dekrementujemy counter remaining i jeśli remaining === 0
+czyli że wszystkie promises się wykonały to wołamy resolve promise zwracanej ze static all z value jako results
+
+więc wołając static all otrzymujemy promise z value jako tablicą wartości zwracanych przez promises dostarczonych do all w items
 
 
-w private resolve wołamy .then na 
- 
- 
- 
- 
+
+
  
  
  
